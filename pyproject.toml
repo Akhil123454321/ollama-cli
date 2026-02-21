@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ollama-cli"
+name = "ollama-agentic"
 version = "0.1.0"
 description = "A beautiful, agentic CLI for Ollama — run local LLMs with auto tool-calling, memory, and more"
 readme = "README.md"
@@ -42,9 +42,9 @@ dev = ["build", "twine", "pytest"]
 ollama-cli = "ollama_cli.main:main"
 
 [project.urls]
-Homepage   = "https://github.com/yourusername/ollama-cli"
-Repository = "https://github.com/yourusername/ollama-cli"
-Issues     = "https://github.com/yourusername/ollama-cli/issues"
+Homepage   = "https://github.com/Akhil123454321/ollama-cli"
+Repository = "https://github.com/Akhil123454321/ollama-cli"
+Issues     = "https://github.com/Akhil123454321/ollama-cli/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
