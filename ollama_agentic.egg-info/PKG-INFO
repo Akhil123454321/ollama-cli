@@ -1,0 +1,188 @@
+Metadata-Version: 2.4
+Name: ollama-agentic
+Version: 0.1.7
+Summary: A beautiful, agentic CLI for Ollama — run local LLMs with auto tool-calling, memory, and more
+License: Copyright (c) 2026 Akhil Sagaran Kasturi
+Project-URL: Homepage, https://github.com/Akhil123454321/ollama-cli
+Project-URL: Repository, https://github.com/Akhil123454321/ollama-cli
+Project-URL: Issues, https://github.com/Akhil123454321/ollama-cli/issues
+Keywords: ollama,llm,cli,ai,agent,local-ai,terminal
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: End Users/Desktop
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Terminals
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: rich>=13.0
+Requires-Dist: prompt_toolkit>=3.0
+Requires-Dist: ollama>=0.4
+Requires-Dist: requests>=2.28
+Requires-Dist: beautifulsoup4>=4.11
+Provides-Extra: dev
+Requires-Dist: build; extra == "dev"
+Requires-Dist: twine; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file
+
+# ollama-agentic
+
+A beautiful, agentic terminal interface for [Ollama](https://ollama.com) — run local LLMs with auto tool-calling, long-term memory, iterative code debugging, and more.
+
+![Python](https://img.shields.io/badge/python-3.10+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![PyPI](https://img.shields.io/pypi/v/ollama-agentic)
+
+## Install
+
+```bash
+pip install ollama-agentic
+ollama-cli
+```
+
+Ollama is installed and started automatically if not already present.
+
+---
+
+## Features
+
+- ⚡ **Auto mode** — model autonomously calls tools to complete tasks (`/auto`)
+- 🔁 **Iterative debug loop** — `/run file.py` auto-fixes errors until code passes
+- 📋 **Plan executor** — `/plan <goal>` breaks goals into typed steps and executes them
+- 🧠 **Long-term memory** — `/remember` stores facts that persist across sessions
+- 📦 **Auto-installs Ollama** — detects if Ollama is missing and installs it for you
+- 🚀 **Auto-starts Ollama** — spins up `ollama serve` automatically if not running
+- ⬇️ **Arrow-key model picker** — `/install` lets you browse and download 25+ models
+- 🔧 **Agent tools** — `/shell`, `/file`, `/fetch`, `/ls` inject real context into chats
+- 💾 **Conversation saving** — `/save` and `/load` persist chats as JSON
+- 🎭 **Personas** — save and load system prompt presets
+- 🆚 **Compare mode** — run the same prompt through two models side by side
+
+---
+
+## Usage
+
+```bash
+ollama-cli                       # start chatting
+ollama-cli --model qwen2.5:7b    # start with a specific model
+ollama-cli --auto                # start in autonomous agent mode
+ollama-cli --compare             # compare two models side by side
+```
+
+---
+
+## Commands
+
+### Chat & Navigation
+| Command | Description |
+|---|---|
+| `/cls` | Clear screen (keep context) |
+| `/clear` | Clear conversation and screen |
+| `Ctrl+L` | Clear screen |
+| `/retry` | Regenerate last response |
+| `/tokens` | Toggle token count display |
+
+### Models
+| Command | Description |
+|---|---|
+| `/model` | Switch active model (arrow-key picker) |
+| `/current` | Show currently active model |
+| `/install` | Browse & install models from catalogue |
+| `/models` | List all installed models |
+| `/compare` | Compare two models side by side |
+
+### Agentic
+| Command | Description |
+|---|---|
+| `/auto` | Toggle autonomous tool-calling mode |
+| `/plan <goal>` | Break a goal into steps and execute |
+| `/run <file.py>` | Run code, auto-fix errors in a loop |
+
+### Memory
+| Command | Description |
+|---|---|
+| `/remember <fact>` | Store a fact in long-term memory |
+| `/memories` | List all stored memories |
+| `/forget <id>` | Delete a memory by ID |
+
+### Context Injection
+| Command | Description |
+|---|---|
+| `/file <path>` | Load a file into context |
+| `/shell <cmd>` | Run a shell command, inject output |
+| `/fetch <url>` | Fetch a webpage into context |
+| `/ls <path>` | Inject a directory listing |
+| `/context` | View or clear active injections |
+
+### Conversations & Personas
+| Command | Description |
+|---|---|
+| `/save <n>` | Save conversation |
+| `/load <n>` | Load conversation |
+| `/list` | List saved conversations |
+| `/system <prompt>` | Set a system prompt |
+| `/persona <n>` | Load a saved persona |
+| `/personas` | List saved personas |
+| `/save-persona <n>` | Save current system prompt as persona |
+
+---
+
+## Agent Mode
+
+Toggle with `/auto` or launch with `--auto`. In auto mode the model can call tools, read results, and loop until the task is done — no manual `/file` or `/shell` needed.
+
+```
+⚡ you › look at main.py and find any bugs
+⚡ you › write a web scraper for hacker news and run it
+⚡ you › set up a basic Flask app in this folder
+```
+
+---
+
+## Config & Data
+
+All config and data is stored in your home directory:
+
+| Path | Description |
+|---|---|
+| `~/.ollama_cli_config.json` | Settings (model, auto mode, etc) |
+| `~/.ollama_cli_history` | Input history |
+| `~/.ollama_cli_memory.json` | Long-term memories |
+| `~/.ollama_cli_saves/` | Saved conversations |
+| `~/.ollama_cli_personas/` | Saved personas |
+
+---
+
+## Requirements
+
+- Python 3.10+
+- macOS, Linux, or Windows
+- Ollama (handled automatically on first run)
+
+---
+
+## Roadmap
+
+- [ ] MCP server — expose tools to Claude Code, Cursor, and other agents
+- [ ] Repo-aware context — auto-index codebase on launch from a project folder
+- [ ] Git tools — `/diff`, `/commit`, `/log`
+- [ ] API key integrations — Claude, OpenAI, Gemini, Groq as model backends
+- [ ] Symbol search across codebase
+
+---
+
+## Contributing
+
+PRs and issues welcome at [github.com/Akhil123454321/ollama-cli](https://github.com/Akhil123454321/ollama-cli). Keep changes focused and include tests where appropriate.
+
+## License
+
+MIT — see [LICENSE](LICENSE)

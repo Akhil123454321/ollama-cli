@@ -1,0 +1,10 @@
+rich>=13.0
+prompt_toolkit>=3.0
+ollama>=0.4
+requests>=2.28
+beautifulsoup4>=4.11
+
+[dev]
+build
+twine
+pytest
