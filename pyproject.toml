@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ollama-agentic"
-version = "0.1.0"
+version = "0.1.1"
 description = "A beautiful, agentic CLI for Ollama — run local LLMs with auto tool-calling, memory, and more"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -49,3 +49,6 @@ Issues     = "https://github.com/Akhil123454321/ollama-cli/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ollama_cli*"]
+
+[tool.setuptools.package-data]
+ollama_cli = ["*.py"]

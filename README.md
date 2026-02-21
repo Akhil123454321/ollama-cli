@@ -1,56 +1,153 @@
-# Ollama CLI — Terminal UI for Local LLMs
+# ollama-agentic
 
-A beautiful, agentic CLI for running local Ollama models with tool-calling, memory, planning, and compare modes.
+A beautiful, agentic terminal interface for [Ollama](https://ollama.com) — run local LLMs with auto tool-calling, long-term memory, iterative code debugging, and more.
 
-Quick links
-- [src/main.py](src/main.py) — main v3 implementation (contains [`OllamaCLI`](src/main.py) and `main()` entry)
-- [ollama_cli.py](ollama_cli.py) — simpler v1 CLI
-- [ollama_cli_v2.py](ollama_cli_v2.py) — v2 CLI with themes and expanded features
-- [pyproject.toml](pyproject.toml) — project metadata & dependencies
+![Python](https://img.shields.io/badge/python-3.10+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![PyPI](https://img.shields.io/pypi/v/ollama-agentic)
 
-Requirements
-- Python >= 3.10
-- Install runtime deps listed in [pyproject.toml](pyproject.toml):
-  pip install rich prompt_toolkit ollama requests beautifulsoup4
+## Install
 
-Run
-- From the package entry (if installed): ollama-cli (configured in [pyproject.toml](pyproject.toml): `ollama_cli.main:main`)
-- Directly:
-  - v3: python src/main.py
-  - v2: python ollama_cli_v2.py
-  - v1: python ollama_cli.py
+```bash
+pip install ollama-agentic
+ollama-cli
+```
 
-Features
-- Interactive chat with streaming output and Markdown rendering
-- Agentic mode: auto tool-calling (shell, file, fetch, ls) and iterative plan execution
-- /plan: generate and execute step plans
-- /run: debug loop for running and auto-fixing Python scripts
-- Long-term memories (/remember, /memories, /forget)
-- Model management and side-by-side model comparison
-- Save/load conversations and personas
+Ollama is installed and started automatically if not already present.
 
-Key symbols
-- [`OllamaCLI`](src/main.py) — primary CLI class and command implementations
-- [`bootstrap`](src/main.py) — ensures Ollama is installed/running and can pull models
-- [`_run_tool`](src/main.py) — executes shell/file/fetch/ls tool calls
+---
 
-Config & data
-- Config stored at: `~/.ollama_cli_config.json`
-- History: `~/.ollama_cli_history`
-- Saves: `~/.ollama_cli_saves`
-- Personas: `~/.ollama_cli_personas`
-- Memory: `~/.ollama_cli_memory.json`
+## Features
 
-Development
-- Run unit tests (if any) via pytest (dev deps in pyproject)
-- Linting and formatting recommended with tools of choice
+- ⚡ **Auto mode** — model autonomously calls tools to complete tasks (`/auto`)
+- 🔁 **Iterative debug loop** — `/run file.py` auto-fixes errors until code passes
+- 📋 **Plan executor** — `/plan <goal>` breaks goals into typed steps and executes them
+- 🧠 **Long-term memory** — `/remember` stores facts that persist across sessions
+- 📦 **Auto-installs Ollama** — detects if Ollama is missing and installs it for you
+- 🚀 **Auto-starts Ollama** — spins up `ollama serve` automatically if not running
+- ⬇️ **Arrow-key model picker** — `/install` lets you browse and download 25+ models
+- 🔧 **Agent tools** — `/shell`, `/file`, `/fetch`, `/ls` inject real context into chats
+- 💾 **Conversation saving** — `/save` and `/load` persist chats as JSON
+- 🎭 **Personas** — save and load system prompt presets
+- 🆚 **Compare mode** — run the same prompt through two models side by side
 
-Notes
-- The CLI requires the `ollama` binary or library; v3 bootstraps installation attempts via `bootstrap` in [src/main.py](src/main.py).
-- Web fetch features require `requests` and `beautifulsoup4` (optional).
+---
 
-License
-- MIT — see LICENSE
+## Usage
 
-Contributing
-- PRs and issues welcome. Keep changes focused and include tests where appropriate.
+```bash
+ollama-cli                       # start chatting
+ollama-cli --model qwen2.5:7b    # start with a specific model
+ollama-cli --auto                # start in autonomous agent mode
+ollama-cli --compare             # compare two models side by side
+```
+
+---
+
+## Commands
+
+### Chat & Navigation
+| Command | Description |
+|---|---|
+| `/cls` | Clear screen (keep context) |
+| `/clear` | Clear conversation and screen |
+| `Ctrl+L` | Clear screen |
+| `/retry` | Regenerate last response |
+| `/tokens` | Toggle token count display |
+
+### Models
+| Command | Description |
+|---|---|
+| `/model` | Switch active model (arrow-key picker) |
+| `/current` | Show currently active model |
+| `/install` | Browse & install models from catalogue |
+| `/models` | List all installed models |
+| `/compare` | Compare two models side by side |
+
+### Agentic
+| Command | Description |
+|---|---|
+| `/auto` | Toggle autonomous tool-calling mode |
+| `/plan <goal>` | Break a goal into steps and execute |
+| `/run <file.py>` | Run code, auto-fix errors in a loop |
+
+### Memory
+| Command | Description |
+|---|---|
+| `/remember <fact>` | Store a fact in long-term memory |
+| `/memories` | List all stored memories |
+| `/forget <id>` | Delete a memory by ID |
+
+### Context Injection
+| Command | Description |
+|---|---|
+| `/file <path>` | Load a file into context |
+| `/shell <cmd>` | Run a shell command, inject output |
+| `/fetch <url>` | Fetch a webpage into context |
+| `/ls <path>` | Inject a directory listing |
+| `/context` | View or clear active injections |
+
+### Conversations & Personas
+| Command | Description |
+|---|---|
+| `/save <n>` | Save conversation |
+| `/load <n>` | Load conversation |
+| `/list` | List saved conversations |
+| `/system <prompt>` | Set a system prompt |
+| `/persona <n>` | Load a saved persona |
+| `/personas` | List saved personas |
+| `/save-persona <n>` | Save current system prompt as persona |
+
+---
+
+## Agent Mode
+
+Toggle with `/auto` or launch with `--auto`. In auto mode the model can call tools, read results, and loop until the task is done — no manual `/file` or `/shell` needed.
+
+```
+⚡ you › look at main.py and find any bugs
+⚡ you › write a web scraper for hacker news and run it
+⚡ you › set up a basic Flask app in this folder
+```
+
+---
+
+## Config & Data
+
+All config and data is stored in your home directory:
+
+| Path | Description |
+|---|---|
+| `~/.ollama_cli_config.json` | Settings (model, auto mode, etc) |
+| `~/.ollama_cli_history` | Input history |
+| `~/.ollama_cli_memory.json` | Long-term memories |
+| `~/.ollama_cli_saves/` | Saved conversations |
+| `~/.ollama_cli_personas/` | Saved personas |
+
+---
+
+## Requirements
+
+- Python 3.10+
+- macOS, Linux, or Windows
+- Ollama (handled automatically on first run)
+
+---
+
+## Roadmap
+
+- [ ] MCP server — expose tools to Claude Code, Cursor, and other agents
+- [ ] Repo-aware context — auto-index codebase on launch from a project folder
+- [ ] Git tools — `/diff`, `/commit`, `/log`
+- [ ] API key integrations — Claude, OpenAI, Gemini, Groq as model backends
+- [ ] Symbol search across codebase
+
+---
+
+## Contributing
+
+PRs and issues welcome at [github.com/Akhil123454321/ollama-cli](https://github.com/Akhil123454321/ollama-cli). Keep changes focused and include tests where appropriate.
+
+## License
+
+MIT — see [LICENSE](LICENSE)
