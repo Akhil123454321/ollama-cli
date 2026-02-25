@@ -1,0 +1,11 @@
+{
+  "ollama_cli.py": 1771599803.963939,
+  "CHANGELOG.md": 1771635842.3101766,
+  "pyproject.toml": 1771875893.6090991,
+  "ollama_cli_v2.py": 1771632397.4276662,
+  "README.md": 1771638485.2415986,
+  "ollama_cli/__init__.py": 1771876183.3322225,
+  "ollama_cli/rag.py": 1771998137.0944138,
+  "ollama_cli/main.py": 1771996876.791409,
+  ".github/workflows/publish.yml": 1771635852.3289232
+}

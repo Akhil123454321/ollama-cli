@@ -13,7 +13,7 @@ Run:
     python ollama_cli_v3.py --compare
 """
 
-import json, os, sys, subprocess, datetime, argparse, time, re
+import json, os, sys, subprocess, datetime, argparse, time, re, threading, queue
 from pathlib import Path
 
 try:
@@ -46,6 +46,12 @@ try:
     WEB_ENABLED = True
 except ImportError:
     WEB_ENABLED = False
+
+try:
+    from rag import RAGIndex, check_deps, format_search_results_rich
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
 
 
 CONFIG_PATH  = Path.home() / ".ollama_cli_config.json"
@@ -350,6 +356,7 @@ HELP_TEXT = (
     "  Just type to chat. Markdown, code blocks, tables all rendered.\n\n"
     "[bold yellow]Agentic Features (NEW in v3)[/bold yellow]\n"
     "  [cyan]/auto[/cyan]                    Toggle autonomous tool-calling mode\n"
+    "  [cyan]/swarm[/cyan] [dim]<task>[/dim]            Split task across concurrent subagents\n"
     "  [cyan]/plan[/cyan] [dim]<goal>[/dim]             Break goal into steps and execute\n"
     "  [cyan]/run[/cyan] [dim]<file.py>[/dim]           Run code, auto-fix errors in a loop\n"
     "  [cyan]/remember[/cyan] [dim]<fact>[/dim]         Store a fact in long-term memory\n"
@@ -374,6 +381,24 @@ HELP_TEXT = (
     "  [cyan]/info[/cyan]                    Session info\n"
     "  [cyan]/tokens[/cyan]                  Toggle token count display\n"
     "  [cyan]/cls[/cyan]                     Clear screen (keep context)\n\n"
+    "[bold yellow]Swarm (Concurrent Agents)[/bold yellow]\n"
+    "  [cyan]/swarm[/cyan] [dim]<task>[/dim]            Decompose task and run subagents in parallel\n"
+    "  [cyan]/swarm-status[/cyan]            Show results from last swarm run\n\n"
+    "[bold yellow]RAG — Semantic Code Search[/bold yellow]\n"
+    "  [cyan]/rag[/cyan]                     Show index status\n"
+    "  [cyan]/rag index[/cyan]               Incremental index of project\n"
+    "  [cyan]/rag index full[/cyan]          Full reindex (wipe + rebuild)\n"
+    "  [cyan]/rag search[/cyan] [dim]<query>[/dim]     Semantic code search\n"
+    "  [cyan]/rag auto[/cyan]                Toggle auto-inject RAG context into chat\n"
+    "  [cyan]/rag clear[/cyan]               Wipe the index\n\n"
+    "[bold yellow]Git[/bold yellow]\n"
+    "  [cyan]/git[/cyan]                     Show git status\n"
+    "  [cyan]/git status[/cyan]              Detailed status\n"
+    "  [cyan]/git diff[/cyan] [dim][staged][/dim]        Show diff, inject into context\n"
+    "  [cyan]/git log[/cyan] [dim][n][/dim]              Recent commits\n"
+    "  [cyan]/git branch[/cyan] [dim][name][/dim]        List or switch branches\n"
+    "  [cyan]/git commit[/cyan] [dim][msg][/dim]         Stage and commit (AI message option)\n"
+    "  [cyan]/git stash[/cyan]               Stash changes\n\n"
     "[bold yellow]Agent Tools[/bold yellow]\n"
     "  [cyan]/shell[/cyan] [dim]<cmd>[/dim]             Run shell command, inject output\n"
     "  [cyan]/file[/cyan] [dim]<path>[/dim]             Load file into context\n"
@@ -419,6 +444,32 @@ Respond ONLY with a JSON object, no extra text:
 """
 
 
+SWARM_DECOMPOSE_SCHEMA = """
+You are a task decomposer for a multi-agent system.
+Given a complex task, break it into independent subtasks that can run in PARALLEL.
+Each subtask must be self-contained — it should NOT depend on results from other subtasks.
+Respond ONLY with valid JSON, no extra text:
+
+{
+  "task": "<original task>",
+  "subtasks": [
+    {
+      "id": 1,
+      "title": "short title",
+      "prompt": "full prompt for this subtask — include all context needed",
+      "tools": ["shell", "file", "fetch"]
+    }
+  ],
+  "synthesis_prompt": "How to combine the subtask results into a final answer"
+}
+
+Rules:
+- 2-5 subtasks maximum
+- Each subtask prompt must be fully self-contained
+- Only include tool names the subtask will actually need
+- synthesis_prompt should explain how to merge the results
+"""
+
 class OllamaCLI:
     def __init__(self, model_override=None):
         self.config        = load_config()
@@ -429,10 +480,27 @@ class OllamaCLI:
         self.memories      = load_memory()
         self.auto_mode          = self.config.get("auto_mode", False)
         self.context_injections = []   # files/shells/fetches injected by user
+        self.git_root           = self._detect_git_repo()
+        self.rag                = self._init_rag()
+        self.swarm_results      = {}   # results from concurrent subagents
+        self._swarm_msg_queue   = queue.Queue()  # background→main thread messages
+        self._notification_thread_active = False
         self.session            = PromptSession(
             history=FileHistory(str(HISTORY_FILE)),
             style=Style.from_dict({"prompt": "bold ansicyan"}),
         )
+
+    def _swarm_print(self, msg):
+        """Queue a message from a background thread to be printed on the main thread."""
+        self._swarm_msg_queue.put(msg)
+
+    def _drain_swarm_queue(self):
+        """Drain and print any queued background messages. Call only from main thread."""
+        while not self._swarm_msg_queue.empty():
+            try:
+                self.console.print(self._swarm_msg_queue.get_nowait())
+            except queue.Empty:
+                break
 
     def print_startup(self):
         LOGO = [
@@ -442,7 +510,7 @@ class OllamaCLI:
             " \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2554\u255d\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551",
             " \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2551 \u255a\u2550\u255d \u2588\u2588\u2551\u2588\u2588\u2551  \u2588\u2588\u2551",
             "  \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d",
-            "              C L I  v 3 . 0  \u00b7  A G E N T I C         ",
+            "              C L I  v 3 . 1  \u00b7  A G E N T I C         ",
         ]
         colors = ["bright_cyan","cyan","bright_green","green","cyan","bright_cyan","dim white"]
         self.console.print()
@@ -469,12 +537,19 @@ class OllamaCLI:
         except Exception:
             model_count = 0
 
+        git_branch = None
+        if self.git_root:
+            b, _, rc = self._git("rev-parse", "--abbrev-ref", "HEAD")
+            git_branch = b if rc == 0 else None
+
         checks = [
             (f"Ollama server    {'running' if ollama_ok else 'not running'}", ollama_ok),
             (f"Model            {self.model}", True),
             (f"Models available {model_count} installed", model_count > 0),
             (f"Memories loaded  {len(self.memories)} stored", True),
             (f"Auto mode        {'ON' if self.auto_mode else 'off'}", True),
+            (f"Git repo         {self.git_root.name} [{git_branch}]" if self.git_root else "Git repo         none detected", self.git_root is not None),
+            (f"RAG index        {'ready' if self.rag else 'not available — pip install lancedb sentence-transformers'}", self.rag is not None),
         ]
         for label, ok in checks:
             icon = "[bold green]\u2713[/bold green]" if ok else "[bold red]\u2717[/bold red]"
@@ -916,6 +991,722 @@ class OllamaCLI:
                 save_config(self.config)
                 self.ok(f"Active model set to: [cyan]{selected}[/cyan]")
 
+    # ── RAG: Semantic Code Search ────────────────────────────────────────────
+
+    def _init_rag(self) -> "Optional[RAGIndex]":
+        """Try to initialise the RAG index. Returns None if deps missing."""
+        if not RAG_AVAILABLE or not self.git_root:
+            return None
+        ok, missing = check_deps()
+        if not ok:
+            return None
+        try:
+            return RAGIndex(self.git_root)
+        except Exception:
+            return None
+
+    def cmd_rag(self, args: str):
+        """Handle /rag <subcommand> [args]"""
+        if not RAG_AVAILABLE:
+            self.err(
+                "RAG dependencies not installed. Run:\n"
+                "  pip install lancedb sentence-transformers tree-sitter tree-sitter-python"
+            )
+            return
+
+        ok, missing = check_deps()
+        if not ok:
+            self.err("Missing RAG dependencies:")
+            for m in missing:
+                self.console.print(f"  [yellow]{m}[/yellow]")
+            return
+
+        parts  = args.strip().split(" ", 1)
+        subcmd = parts[0].lower() if parts[0] else "status"
+        subarg = parts[1].strip() if len(parts) > 1 else ""
+
+        match subcmd:
+            case "index":
+                self._rag_index(full="full" in subarg)
+            case "search" | "s":
+                if not subarg:
+                    self.err("Usage: /rag search <query>")
+                else:
+                    self._rag_search(subarg)
+            case "status" | "":
+                self._rag_status()
+            case "clear":
+                self._rag_clear()
+            case "auto":
+                self._rag_toggle_auto(subarg)
+            case _:
+                # Treat bare /rag <query> as a search
+                self._rag_search(args.strip())
+
+    def _rag_ensure(self) -> bool:
+        """Ensure self.rag is initialised. Returns True if ready."""
+        if self.rag is None:
+            if self.git_root:
+                self.rag = self._init_rag()
+            if self.rag is None:
+                self.err("RAG index not available. Run /rag index first.")
+                return False
+        return True
+
+    def _rag_index(self, full: bool = False):
+        if not self._rag_ensure():
+            return
+        label = "Full reindex" if full else "Incremental index"
+        self.console.print(f"\n[bold yellow]🔍 RAG — {label}[/bold yellow]\n")
+
+        def _progress(msg):
+            self.console.print(f"  [dim]{msg}[/dim]")
+
+        stats = self.rag.index(full=full, progress_cb=_progress)
+
+        from rich.table import Table as RTable
+        from rich import box as rbox
+        t = RTable(box=rbox.SIMPLE, show_header=False)
+        t.add_column("k", style="dim yellow", width=16)
+        t.add_column("v", style="cyan")
+        t.add_row("Chunks indexed", str(stats["indexed"]))
+        t.add_row("Files skipped",  str(stats["skipped"]))
+        t.add_row("Files deleted",  str(stats["deleted"]))
+        t.add_row("Errors",         str(stats["errors"]))
+        t.add_row("Time",           f"{stats['elapsed']:.1f}s")
+        self.console.print(t)
+
+    def _rag_search(self, query: str):
+        if not self._rag_ensure():
+            return
+        self.console.print(f"\n[bold cyan]🔍 RAG Search:[/bold cyan] [white]{query}[/white]\n")
+        try:
+            results = self.rag.search(query, top_k=8)
+        except Exception as e:
+            self.err(f"Search error: {e}")
+            return
+
+        if not results:
+            self.info("No results found. Try /rag index to update the index.")
+            return
+
+        self.console.print(format_search_results_rich(results))
+
+        # Inject top results into context
+        ctx = self.rag.search_as_context(query, top_k=5)
+        if ctx:
+            self.context_injections.append(ctx)
+            self.info(f"Top {min(5, len(results))} chunks injected into context.")
+
+    def _rag_status(self):
+        if not self._rag_ensure():
+            return
+        stats = self.rag.status()
+
+        from rich.table import Table as RTable
+        from rich.panel import Panel as RPanel
+        from rich import box as rbox
+
+        lines = [
+            f"[dim]DB path:[/dim]     [cyan]{stats['db_path']}[/cyan]",
+            f"[dim]Embed model:[/dim] [cyan]{stats['embed_model']}[/cyan]",
+            f"[dim]AST chunking:[/dim] {'[green]enabled (tree-sitter)[/green]' if stats['ast_chunking'] else '[yellow]disabled (line-window fallback)[/yellow]'}",
+            "",
+            f"[bold]Total chunks:[/bold]  [cyan]{stats['total_chunks']:,}[/cyan]",
+            f"[bold]Indexed files:[/bold] [cyan]{stats['indexed_files']:,}[/cyan]",
+        ]
+        if stats["by_language"]:
+            lines.append("")
+            lines.append("[dim]By language:[/dim]")
+            for lang, count in sorted(stats["by_language"].items(), key=lambda x: -x[1])[:10]:
+                bar = "█" * min(20, count // max(1, stats["total_chunks"] // 20))
+                lines.append(f"  [cyan]{lang:<12}[/cyan] {count:>5}  [dim]{bar}[/dim]")
+
+        self.console.print(RPanel(
+            "\n".join(lines),
+            title="[bold yellow]🔍 RAG Index Status[/bold yellow]",
+            border_style="yellow", box=rbox.ROUNDED
+        ))
+
+    def _rag_clear(self):
+        if not self._rag_ensure():
+            return
+        ans = self.console.input("[bold red]Clear entire RAG index? (y/N):[/bold red] ").strip().lower()
+        if ans == "y":
+            self.rag.clear()
+            self.ok("RAG index cleared.")
+        else:
+            self.info("Cancelled.")
+
+    def _rag_toggle_auto(self, args: str):
+        """Toggle whether RAG auto-injects context into every chat message."""
+        current = self.config.get("rag_auto_context", False)
+        new_val = not current
+        self.config["rag_auto_context"] = new_val
+        save_config(self.config)
+        if new_val:
+            self.ok("RAG auto-context [bold green]ON[/bold green] — relevant code chunks will be injected automatically.")
+        else:
+            self.info("RAG auto-context [dim]OFF[/dim]")
+
+    # ── Swarm: Concurrent Subagents ──────────────────────────────────────────
+
+    def _run_subagent(self, task_id, title, prompt, tools, results_queue):
+        """Worker function — runs in its own thread. Executes one subtask autonomously."""
+        try:
+            system = TOOL_SCHEMA + f"\n\nYou are subagent #{task_id}: {title}\nFocus ONLY on your assigned subtask."
+            msgs   = [{"role": "user", "content": prompt}]
+            max_steps = self.config.get("max_auto_steps", 8)
+            final = ""
+            for _ in range(max_steps):
+                try:
+                    resp = ollama.chat(model=self.model, messages=msgs)
+                    text = resp["message"]["content"]
+                except Exception as e:
+                    final = f"[Subagent error: {e}]"
+                    break
+                tool_call = self._parse_tool_call(text)
+                if tool_call is None:
+                    final = text
+                    break
+                tool_name, tool_args = tool_call
+                if tool_name == "done":
+                    final = re.sub(r"```tool.*?```", "", text, flags=re.DOTALL).strip()
+                    break
+                if tool_name not in (tools or ["shell","file","fetch","ls","done"]):
+                    final = f"[Subagent skipped disallowed tool: {tool_name}]\n{text}"
+                    break
+                tool_result = self._run_tool(tool_name, tool_args)
+                msgs.append({"role": "assistant", "content": text})
+                msgs.append({"role": "user",      "content": f"[Tool result: {tool_name}]\n{tool_result}"})
+            else:
+                final = f"[Subagent {task_id} reached max steps]"
+            results_queue.put((task_id, title, final, None))
+        except Exception as e:
+            results_queue.put((task_id, title, "", str(e)))
+
+    def cmd_swarm(self, args):
+        """Decompose a task into parallel subtasks, run entirely in background."""
+        if not args:
+            self.err("Usage: /swarm <complex task>")
+            return
+
+        # Block if a swarm is already running
+        if getattr(self, "_swarm_running", False):
+            self.err("A swarm is already running. Use /swarm-status to check progress.")
+            return
+
+        task = args.strip()
+        self.console.print(f"\n[bold yellow]🐝 SWARM MODE[/bold yellow] [dim]— decomposing task...[/dim]\n")
+
+        # Step 1: Decompose (this part is quick — do it on main thread so user sees the plan)
+        raw = self._llm(
+            [{"role": "user", "content": f"Task: {task}"}],
+            system=SWARM_DECOMPOSE_SCHEMA
+        )
+        try:
+            clean    = re.sub(r"```json|```", "", raw).strip()
+            plan     = json.loads(clean)
+            subtasks = plan.get("subtasks", [])
+            synthesis_prompt = plan.get("synthesis_prompt", "Synthesize the results below into a final answer.")
+        except Exception:
+            self.err("Failed to decompose task into subtasks.")
+            self.p_ai(raw)
+            return
+
+        if not subtasks:
+            self.err("No subtasks generated.")
+            return
+
+        # Reset state for this run
+        self._swarm_running   = True
+        self._swarm_task      = task
+        self._swarm_total     = len(subtasks)
+        self._swarm_completed = {}
+        self._swarm_lock      = threading.Lock()
+        self.swarm_results    = {}
+
+        # Build a rich launch table showing every agent and its mission
+        table = Table(
+            title=f"[bold yellow]🐝 Swarm Deployed — {len(subtasks)} Parallel Agents[/bold yellow]",
+            box=box.ROUNDED, border_style="yellow", show_header=True,
+            title_justify="left"
+        )
+        table.add_column("#",       style="bold cyan",   width=3,  no_wrap=True)
+        table.add_column("Agent",   style="bold white",  width=22, no_wrap=True)
+        table.add_column("Mission", style="white",       ratio=1)
+        table.add_column("Tools",   style="dim yellow",  width=18, no_wrap=True)
+        table.add_column("Status",  style="green",       width=10, no_wrap=True)
+
+        for st in subtasks:
+            tools_str = ", ".join(st.get("tools", [])) or "think"
+            # Use the prompt's first sentence as the mission summary if title is short
+            mission = st.get("prompt", "").split(".")[0].strip()[:80] if len(st["title"]) < 20 else st["title"]
+            table.add_row(
+                str(st["id"]),
+                st["title"],
+                mission,
+                tools_str,
+                "⏳ queued"
+            )
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
+        self.console.print(
+            f"  [dim]Task:[/dim] [white]{task}[/white]\n"
+            f"  [dim]Running in background — use [/dim][cyan]/swarm-status[/cyan][dim] to check · "
+            f"[/dim][cyan]/swarm-status full[/cyan][dim] for full output[/dim]"
+        )
+        self.console.print()
+
+        # Step 2: Supervisor thread — launches agents, waits, synthesizes — all in background
+        def _supervisor():
+            results_queue = queue.Queue()
+            start_time    = time.time()
+
+            # Launch agent threads
+            agent_threads = []
+            for st in subtasks:
+                t = threading.Thread(
+                    target=self._run_subagent,
+                    args=(st["id"], st["title"], st["prompt"], st.get("tools"), results_queue),
+                    daemon=True
+                )
+                agent_threads.append(t)
+                t.start()
+
+            # Wait for each agent and print completion notices as they finish
+            finished = 0
+            while finished < len(agent_threads):
+                try:
+                    task_id, title, result, error = results_queue.get(timeout=0.5)
+                    done_at = time.time() - start_time
+                    with self._swarm_lock:
+                        self._swarm_completed[task_id] = {
+                            "title":   title,
+                            "result":  result,
+                            "error":   error,
+                            "done_at": done_at,
+                        }
+                    finished += 1
+                    remaining = len(agent_threads) - finished
+                    if error:
+                        self._swarm_print(
+                            f"  [red]✗[/red] [dim]Agent {task_id} ({title}) failed "
+                            f"({done_at:.1f}s)[/dim]"
+                            + (f" · {remaining} remaining" if remaining else " · all done")
+                        )
+                    else:
+                        self._swarm_print(
+                            f"  [green]✓[/green] [dim]Agent {task_id} ({title}) done "
+                            f"({done_at:.1f}s)[/dim]"
+                            + (f" · {remaining} remaining" if remaining else " · all done")
+                        )
+                except queue.Empty:
+                    # Check for timed-out threads
+                    for t in agent_threads:
+                        if not t.is_alive() and finished < len(agent_threads):
+                            pass  # will be caught on next queue.get
+                    continue
+
+            elapsed = time.time() - start_time
+
+            # Store final results
+            with self._swarm_lock:
+                self.swarm_results = dict(self._swarm_completed)
+
+            # Synthesize
+            self._swarm_print(
+                f"\n[bold yellow]🐝 All {len(agent_threads)} agents done in {elapsed:.1f}s "
+                f"— synthesizing...[/bold yellow]\n"
+            )
+            results_text = "\n\n".join(
+                f"=== Agent {k}: {v['title']} ===\n{v['result'] or v['error']}"
+                for k, v in sorted(self._swarm_completed.items())
+            )
+            synth_resp = self._stream(
+                [{"role": "user", "content":
+                    f"Original task: {task}\n\n{synthesis_prompt}\n\n{results_text}"}],
+                system=self._build_system()
+            )
+            if synth_resp:
+                self.messages.append({"role": "user",     "content": f"/swarm {task}"})
+                self.messages.append({"role": "assistant", "content": synth_resp})
+
+            self._swarm_running = False
+            self._swarm_print(
+                "[dim]Swarm complete. Use /swarm-status to review individual agent results.[/dim]"
+            )
+
+        supervisor = threading.Thread(target=_supervisor, daemon=True)
+        supervisor.start()
+
+    def cmd_swarm_status(self, args=""):
+        """Check background swarm progress. /swarm-status full to see full agent outputs."""
+        running   = getattr(self, "_swarm_running", False)
+        total     = getattr(self, "_swarm_total", 0)
+        task      = getattr(self, "_swarm_task", "")
+        show_full = args.strip().lower() == "full"
+
+        if not total and not self.swarm_results:
+            self.info("No swarm has been run yet. Use /swarm <task>")
+            return
+
+        with getattr(self, "_swarm_lock", threading.Lock()):
+            snapshot = dict(getattr(self, "_swarm_completed", {}) or self.swarm_results)
+
+        done  = len(snapshot)
+        state = "RUNNING" if running else "COMPLETE"
+        state_color = "yellow" if running else "green"
+
+        # Header
+        self.console.print()
+        self.console.print(f"[bold {state_color}]🐝 Swarm {state}[/bold {state_color}]"
+                           f"  [dim]{done}/{total} agents done[/dim]")
+        self.console.print(f"[dim]Task: {task}[/dim]")
+        self.console.print()
+
+        if not snapshot:
+            self.console.print("  [dim]No agents finished yet — check back in a moment.[/dim]")
+            self.console.print()
+            return
+
+        # Agent summary table
+        table = Table(box=box.SIMPLE, show_header=True, border_style="bright_black")
+        table.add_column("#",       style="cyan",  width=3,  no_wrap=True)
+        table.add_column("Agent",   style="white", ratio=1)
+        table.add_column("Time",    style="yellow", width=7,  no_wrap=True)
+        table.add_column("Status",  width=8,  no_wrap=True)
+        table.add_column("Preview", style="dim",   ratio=2)
+
+        for task_id in sorted(snapshot.keys()):
+            item    = snapshot[task_id]
+            elapsed = f"{item['done_at']:.1f}s" if "done_at" in item else "—"
+            if item["error"]:
+                status  = "[red]✗ error[/red]"
+                preview = f"[red]{item['error'][:60]}[/red]"
+            else:
+                status  = "[green]✓ done[/green]"
+                # first non-empty line of result as preview
+                first_line = next((l.strip() for l in item["result"].splitlines() if l.strip()), "")
+                preview = first_line[:80] + ("…" if len(first_line) > 80 else "")
+            table.add_row(str(task_id), item["title"], elapsed, status, preview)
+
+        # Pending agents
+        finished_ids = set(snapshot.keys())
+        for i in range(1, total + 1):
+            if i not in finished_ids:
+                table.add_row(str(i), "[dim]running...[/dim]", "—", "[yellow]⏳[/yellow]", "")
+
+        self.console.print(table)
+
+        if not show_full:
+            self.console.print(f"[dim]  Tip: /swarm-status full  to read each agent's full output[/dim]")
+            self.console.print()
+            return
+
+        # Full output panels
+        self.console.print()
+        self.console.rule("[dim]Full Agent Results[/dim]", style="bright_black")
+        self.console.print()
+        for task_id in sorted(snapshot.keys()):
+            item = snapshot[task_id]
+            elapsed = f"{item['done_at']:.1f}s" if "done_at" in item else ""
+            if item["error"]:
+                self.console.print(Panel(
+                    f"[red]{item['error']}[/red]",
+                    title=f"[red]✗ Agent {task_id}: {item['title']}[/red]",
+                    border_style="red", box=box.ROUNDED
+                ))
+            else:
+                self.console.print(Panel(
+                    Markdown(item["result"]),
+                    title=f"[bold cyan]Agent {task_id}: {item['title']}[/bold cyan]  [dim]{elapsed}[/dim]",
+                    border_style="cyan", box=box.ROUNDED
+                ))
+            self.console.print()
+
+    # ── Git Integration ──────────────────────────────────────────────────────
+
+    def _detect_git_repo(self):
+        """Walk up from cwd to find .git root. Returns Path or None."""
+        p = Path.cwd()
+        for _ in range(10):
+            if (p / ".git").exists():
+                return p
+            if p.parent == p:
+                break
+            p = p.parent
+        return None
+
+    def _git(self, *args, cwd=None):
+        """Run a git command, return (stdout, stderr, returncode)."""
+        cwd = cwd or self.git_root or Path.cwd()
+        r = subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, cwd=str(cwd)
+        )
+        return r.stdout.strip(), r.stderr.strip(), r.returncode
+
+    def _git_context_string(self):
+        """Build a compact git context string for the system prompt."""
+        if not self.git_root:
+            return None
+        parts = []
+        # Repo name
+        parts.append(f"Git repo: {self.git_root.name}")
+        # Current branch
+        branch, _, rc = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        if rc == 0:
+            parts.append(f"Branch: {branch}")
+        # Short status
+        status, _, rc = self._git("status", "--short")
+        if rc == 0 and status:
+            lines = status.splitlines()
+            parts.append(f"Uncommitted changes ({len(lines)} files): {', '.join(l.strip() for l in lines[:5])}")
+        else:
+            parts.append("Working tree: clean")
+        # Last commit
+        log, _, rc = self._git("log", "--oneline", "-1")
+        if rc == 0 and log:
+            parts.append(f"Last commit: {log}")
+        return " · ".join(parts)
+
+    def cmd_git(self, args):
+        """Handle /git <subcommand> [args]"""
+        if not args:
+            self._git_status()
+            return
+        parts    = args.strip().split(" ", 1)
+        subcmd   = parts[0].lower()
+        subargs  = parts[1] if len(parts) > 1 else ""
+        match subcmd:
+            case "status" | "st":   self._git_status()
+            case "diff":            self._git_diff(subargs)
+            case "log":             self._git_log(subargs)
+            case "branch" | "br":   self._git_branch(subargs)
+            case "commit":          self._git_commit(subargs)
+            case "stash":           self._git_stash(subargs)
+            case _:
+                # Pass through to git directly for anything else
+                out, err, rc = self._git(*args.split())
+                output = out or err or "(no output)"
+                self.p_tool(f"git {args}", output)
+                if rc == 0 and out:
+                    self.context_injections.append(f"[git {args}]\n```\n{out}\n```")
+                    self.info("Output injected into context.")
+
+    def _git_status(self):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        branch, _, _ = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        status, _, _ = self._git("status", "--short")
+        ahead_behind, _, _ = self._git("status", "-sb")
+        # Build display
+        lines = []
+        lines.append(f"[bold cyan]Branch:[/bold cyan] [green]{branch}[/green]")
+        if ahead_behind and "ahead" in ahead_behind:
+            ab = ahead_behind.splitlines()[0]
+            lines.append(f"[dim]{ab}[/dim]")
+        lines.append("")
+        if status:
+            for line in status.splitlines():
+                code = line[:2]
+                name = line[3:]
+                color = {
+                    "M ": "yellow", " M": "yellow",
+                    "A ": "green",  " A": "green",
+                    "D ": "red",    " D": "red",
+                    "??": "dim",    "R ": "cyan",
+                }.get(code, "white")
+                label = {
+                    "M ": "modified (staged)", " M": "modified",
+                    "A ": "added (staged)",    "D ": "deleted",
+                    "??": "untracked",          "R ": "renamed",
+                    " D": "deleted",
+                }.get(code, code.strip())
+                lines.append(f"  [{color}]{code}[/{color}] [white]{name}[/white]  [dim]{label}[/dim]")
+        else:
+            lines.append("  [dim green]✓ Working tree clean[/dim green]")
+        self.console.print(Panel(
+            "\n".join(lines),
+            title=f"[bold yellow]⎇  git status — {self.git_root.name}[/bold yellow]",
+            border_style="yellow", box=box.ROUNDED
+        ))
+
+    def _git_diff(self, args=""):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        # default: unstaged diff. args can be "staged", a filename, or a commit
+        if args == "staged":
+            diff, _, _ = self._git("diff", "--cached")
+            title = "git diff --cached (staged)"
+        elif args:
+            diff, _, _ = self._git("diff", *args.split())
+            title = f"git diff {args}"
+        else:
+            diff, _, _ = self._git("diff")
+            title = "git diff (unstaged)"
+        if not diff:
+            self.info("No diff output — working tree may be clean or all changes are staged.")
+            return
+        # Truncate for display but inject full
+        preview = diff[:3000] + ("\n... (truncated)" if len(diff) > 3000 else "")
+        self.console.print(Panel(
+            Markdown(f"```diff\n{preview}\n```"),
+            title=f"[bold yellow]{title}[/bold yellow]",
+            border_style="yellow", box=box.ROUNDED
+        ))
+        self.context_injections.append(f"[{title}]\n```diff\n{diff}\n```")
+        self.info(f"Diff injected into context. ({len(diff):,} chars)")
+
+    def _git_log(self, args=""):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        n = "15"
+        extra = []
+        if args:
+            parts = args.split()
+            if parts[0].isdigit():
+                n = parts[0]
+                extra = parts[1:]
+            else:
+                extra = parts
+        # Use a separator-based format: hash|date|author|subject
+        fmt = "%h|%ad|%an|%s"
+        log, _, rc = self._git("log", f"--format={fmt}", "--date=format:%Y-%m-%d %H:%M", f"-{n}", *extra)
+        if rc != 0 or not log:
+            self.info("No commits found.")
+            return
+        table = Table(title=f"Recent commits — {self.git_root.name}", box=box.ROUNDED, border_style="bright_black")
+        table.add_column("Hash",    style="cyan",    width=9,  no_wrap=True)
+        table.add_column("Date",    style="yellow",  width=17, no_wrap=True)
+        table.add_column("Author",  style="magenta", width=16, no_wrap=True)
+        table.add_column("Message", style="white")
+        for line in log.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) == 4:
+                table.add_row(*parts)
+        self.console.print(table)
+        self.context_injections.append(f"[git log (last {n})]\n```\n{log}\n```")
+        self.info("Log injected into context.")
+
+    def _git_branch(self, args=""):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        if args:
+            # Switch to branch
+            _, err, rc = self._git("checkout", args.strip())
+            if rc == 0:
+                self.ok(f"Switched to branch: [cyan]{args.strip()}[/cyan]")
+            else:
+                self.err(f"git checkout failed: {err}")
+            return
+        # List branches
+        branches, _, _ = self._git("branch", "-a")
+        if not branches:
+            self.info("No branches found.")
+            return
+        lines = []
+        for b in branches.splitlines():
+            b = b.strip()
+            if b.startswith("* "):
+                lines.append(f"  [bold green]▶  {b[2:]}[/bold green]  [dim]← current[/dim]")
+            elif "remotes/" in b:
+                lines.append(f"  [dim]{b}[/dim]")
+            else:
+                lines.append(f"  [cyan]{b}[/cyan]")
+        self.console.print(Panel(
+            "\n".join(lines),
+            title="[bold yellow]⎇  Branches[/bold yellow]",
+            border_style="yellow", box=box.ROUNDED
+        ))
+
+    def _git_commit(self, args=""):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        # Show status first
+        status, _, _ = self._git("status", "--short")
+        staged   = [l for l in (status or "").splitlines() if not l.startswith("?") and not l.startswith(" ")]
+        unstaged = [l for l in (status or "").splitlines() if l.startswith(" ") or l.startswith("?")]
+        if not staged and not unstaged:
+            self.info("Nothing to commit — working tree clean.")
+            return
+        if not staged:
+            self.console.print(f"[yellow]No staged files.[/yellow] Unstaged changes:")
+            for l in unstaged[:10]:
+                self.console.print(f"  [dim]{l}[/dim]")
+            ans = self.console.input("\n[bold]Stage all changes? (y/N/cancel):[/bold] ").strip().lower()
+            if ans in ("", "n", "cancel", "c", "q"):
+                self.info("Commit cancelled.")
+                return
+            if ans == "y":
+                self._git("add", "-A")
+                self.ok("All changes staged.")
+            else:
+                self.info("Commit cancelled.")
+                return
+        # Get commit message
+        if args:
+            msg = args.strip()
+        else:
+            self.console.print("[bold yellow]Staged files:[/bold yellow]")
+            for l in staged[:10]:
+                self.console.print(f"  [dim]{l}[/dim]")
+            self.console.print()
+            ans = self.console.input("[bold]AI-suggest commit message? (y/N/cancel):[/bold] ").strip().lower()
+            if ans in ("cancel", "c", "q"):
+                self.info("Commit cancelled.")
+                return
+            if ans == "y":
+                diff, _, _ = self._git("diff", "--cached")
+                suggestion = self._llm([{
+                    "role": "user",
+                    "content": f"Write a concise, conventional commit message (under 72 chars) for this diff:\n\n{diff[:3000]}"
+                }])
+                suggestion = suggestion.strip().splitlines()[0]
+                self.console.print(f"\n[dim]Suggested: [cyan]{suggestion}[/cyan][/dim]")
+                use_it = self.console.input("[bold]Use this message? (Y/n/cancel):[/bold] ").strip().lower()
+                if use_it in ("cancel", "c", "q"):
+                    self.info("Commit cancelled.")
+                    return
+                if use_it == "n":
+                    msg = self.console.input("[bold]Commit message (empty to cancel):[/bold] ").strip()
+                else:
+                    msg = suggestion
+            else:
+                msg = self.console.input("[bold]Commit message (empty to cancel):[/bold] ").strip()
+        if not msg:
+            self.info("Commit cancelled.")
+            return
+        _, err, rc = self._git("commit", "-m", msg)
+        if rc == 0:
+            self.ok(f"Committed: [cyan]{msg}[/cyan]")
+        else:
+            self.err(f"Commit failed: {err}")
+
+    def _git_stash(self, args=""):
+        if not self.git_root:
+            self.err("Not inside a git repository.")
+            return
+        if args in ("pop", "apply"):
+            _, err, rc = self._git("stash", args)
+            if rc == 0: self.ok(f"git stash {args} succeeded.")
+            else: self.err(f"git stash {args} failed: {err}")
+        elif args == "list":
+            out, _, _ = self._git("stash", "list")
+            self.console.print(out or "[dim]No stashes.[/dim]")
+        else:
+            _, err, rc = self._git("stash")
+            if rc == 0: self.ok("Changes stashed.")
+            else: self.err(f"Stash failed: {err}")
+
     def cmd_compare(self, args):
         parts = args.strip().split()
         try:
@@ -1132,6 +1923,10 @@ class OllamaCLI:
     def _build_system(self):
         """Assemble the full system prompt from memories + injections + user system prompt."""
         parts = []
+        # Git repo context — always included if in a repo
+        git_ctx = self._git_context_string()
+        if git_ctx:
+            parts.append(f"Current working context: {git_ctx}")
         mem = self._memory_context()
         if mem:
             parts.append(f"Memories about the user:\n{mem}")
@@ -1143,6 +1938,13 @@ class OllamaCLI:
                 "Treat this content as if you wrote it yourself and know it completely.\n\n"
                 + joined
             )
+        # RAG auto-context — inject relevant chunks based on last user message
+        if self.config.get("rag_auto_context", False) and self.rag and self.messages:
+            last_user = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), None)
+            if last_user and len(last_user) > 10:
+                rag_ctx = self.rag.search_as_context(last_user, top_k=4)
+                if rag_ctx:
+                    parts.append(rag_ctx)
         if self.system_prompt:
             parts.append(self.system_prompt)
         return "\n\n".join(parts) or None
@@ -1153,16 +1955,24 @@ class OllamaCLI:
         if resp:
             self.messages.append({"role": "assistant", "content": resp})
 
+    def _start_notification_thread(self):
+        """Placeholder — real-time idle notifications deferred to future sprint."""
+        pass
+
     def run(self):
         self.print_startup()
         self.print_banner()
+        self._start_notification_thread()
         while True:
+            self._drain_swarm_queue()
             try:
                 label      = "\u26a1 you" if self.auto_mode else "you"
                 user_input = self.session.prompt(HTML(f"<b>{label}</b> <ansiyellow>\u203a</ansiyellow> ")).strip()
             except (KeyboardInterrupt, EOFError):
+                self._drain_swarm_queue()
                 self.console.print("\n[dim]Goodbye![/dim]")
                 break
+            self._drain_swarm_queue()
             if not user_input:
                 continue
             # Ctrl+L equivalent
@@ -1197,6 +2007,10 @@ class OllamaCLI:
                     case "file":         self.tool_file(args)
                     case "fetch":        self.tool_fetch(args)
                     case "ls":           self.tool_ls(args or ".")
+                    case "rag":          self.cmd_rag(args)
+                    case "swarm":        self.cmd_swarm(args)
+                    case "swarm-status": self.cmd_swarm_status(args)
+                    case "git":          self.cmd_git(args)
                     case "auto":         self.cmd_auto()
                     case "plan":         self.cmd_plan(args)
                     case "run":          self.cmd_run(args)
