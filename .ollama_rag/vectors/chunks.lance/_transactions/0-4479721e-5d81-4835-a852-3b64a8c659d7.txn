@@ -1,6 +1,0 @@
-$4479721e-5d81-4835-a852-3b64a8c659d7²®*chunk_id ÿÿÿÿÿÿÿÿÿ*string08Zdefault-	file_path ÿÿÿÿÿÿÿÿÿ*string08Zdefault-
-start_line ÿÿÿÿÿÿÿÿÿ*int3208Zdefault+end_line ÿÿÿÿÿÿÿÿÿ*int3208Zdefault+content ÿÿÿÿÿÿÿÿÿ*string08Zdefault.
-chunk_type ÿÿÿÿÿÿÿÿÿ*string08Zdefault/symbol_name ÿÿÿÿÿÿÿÿÿ*string08Zdefault,language ÿÿÿÿÿÿÿÿÿ*string08Zdefault.
-file_mtime ÿÿÿÿÿÿÿÿÿ*double08Zdefault=vector	 ÿÿÿÿÿÿÿÿÿ*fixed_size_list:float:38408Zdefault"'
-lance.auto_cleanup.older_than14days"!
-lance.auto_cleanup.interval20
