@@ -1,30 +1,39 @@
 # ollama-agentic
 
-A beautiful, agentic terminal interface for [Ollama](https://ollama.com) — run local LLMs with auto tool-calling, long-term memory, iterative code debugging, and more.
+A beautiful, agentic terminal interface for [Ollama](https://ollama.com) — run local LLMs with auto tool-calling, long-term memory, git integration, concurrent subagents, and semantic code search.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PyPI](https://img.shields.io/pypi/v/ollama-agentic)
 
-## Install
+---
+
+## ⚠️ Requirement: Ollama must be installed first
+
+**This CLI is a frontend for Ollama. It will not work without Ollama installed and running on your machine.**
+
+1. Download and install Ollama from [ollama.com/download](https://ollama.com/download)
+2. Start it: `ollama serve` (or open the Ollama desktop app)
+3. Pull a model: `ollama pull mistral` or `ollama pull llama3.1:8b`
+
+Then install and launch this CLI:
 
 ```bash
 pip install ollama-agentic
 ollama-cli
 ```
 
-Ollama is installed and started automatically if not already present.
-
 ---
 
 ## Features
 
 - ⚡ **Auto mode** — model autonomously calls tools to complete tasks (`/auto`)
+- 🐝 **Swarm agents** — `/swarm` splits complex tasks across parallel background agents
+- 🔍 **Semantic code search (RAG)** — AST-aware local codebase indexing, no API needed
+- 🌿 **Git integration** — `/git` status, diff, log, commit (with AI messages), branch, stash
 - 🔁 **Iterative debug loop** — `/run file.py` auto-fixes errors until code passes
 - 📋 **Plan executor** — `/plan <goal>` breaks goals into typed steps and executes them
 - 🧠 **Long-term memory** — `/remember` stores facts that persist across sessions
-- 📦 **Auto-installs Ollama** — detects if Ollama is missing and installs it for you
-- 🚀 **Auto-starts Ollama** — spins up `ollama serve` automatically if not running
 - ⬇️ **Arrow-key model picker** — `/install` lets you browse and download 25+ models
 - 🔧 **Agent tools** — `/shell`, `/file`, `/fetch`, `/ls` inject real context into chats
 - 💾 **Conversation saving** — `/save` and `/load` persist chats as JSON
@@ -70,6 +79,31 @@ ollama-cli --compare             # compare two models side by side
 | `/auto` | Toggle autonomous tool-calling mode |
 | `/plan <goal>` | Break a goal into steps and execute |
 | `/run <file.py>` | Run code, auto-fix errors in a loop |
+| `/swarm <task>` | Decompose task across parallel background agents |
+| `/swarm-status` | Check swarm progress |
+| `/swarm-status full` | See full output from each agent |
+
+### Git
+| Command | Description |
+|---|---|
+| `/git` | Show git status |
+| `/git diff` | Show unstaged diff, inject into context |
+| `/git diff staged` | Show staged diff |
+| `/git log` | Recent commits with timestamps |
+| `/git branch` | List branches |
+| `/git branch <n>` | Switch branch |
+| `/git commit` | Stage and commit (AI message option) |
+| `/git stash` | Stash changes |
+
+### RAG — Semantic Code Search
+| Command | Description |
+|---|---|
+| `/rag` | Show index status |
+| `/rag index` | Incremental index of project |
+| `/rag index full` | Wipe and rebuild index |
+| `/rag search <query>` | Semantic search over codebase |
+| `/rag auto` | Toggle auto-inject relevant chunks into every chat |
+| `/rag clear` | Wipe the index |
 
 ### Memory
 | Command | Description |
@@ -100,9 +134,41 @@ ollama-cli --compare             # compare two models side by side
 
 ---
 
+## Swarm Agents
+
+`/swarm` decomposes a complex task into independent subtasks and runs them as parallel agents in the background. You keep using the CLI while they work.
+
+```
+you › /swarm research React Server Components vs traditional SSR
+you › /swarm-status          # check mid-task
+you › /swarm-status full     # read each agent's full output
+```
+
+---
+
+## RAG — Semantic Code Search
+
+Run from inside any git repo. Uses AST-aware chunking for Python and sliding-window chunking for all other languages. Embeddings run fully offline via `sentence-transformers`.
+
+RAG dependencies are optional — the CLI works fine without them:
+
+```bash
+pip install lancedb sentence-transformers tree-sitter tree-sitter-python
+```
+
+```
+you › /rag index             # index your project (~seconds)
+you › /rag search auth flow  # semantic search
+you › /rag auto              # auto-inject relevant chunks into every chat
+```
+
+The index lives in `.ollama_rag/` inside your project. Only changed files are re-indexed on subsequent runs.
+
+---
+
 ## Agent Mode
 
-Toggle with `/auto` or launch with `--auto`. In auto mode the model can call tools, read results, and loop until the task is done — no manual `/file` or `/shell` needed.
+Toggle with `/auto` or launch with `--auto`. The model calls tools, reads results, and loops until the task is done.
 
 ```
 ⚡ you › look at main.py and find any bugs
@@ -114,8 +180,6 @@ Toggle with `/auto` or launch with `--auto`. In auto mode the model can call too
 
 ## Config & Data
 
-All config and data is stored in your home directory:
-
 | Path | Description |
 |---|---|
 | `~/.ollama_cli_config.json` | Settings (model, auto mode, etc) |
@@ -123,6 +187,7 @@ All config and data is stored in your home directory:
 | `~/.ollama_cli_memory.json` | Long-term memories |
 | `~/.ollama_cli_saves/` | Saved conversations |
 | `~/.ollama_cli_personas/` | Saved personas |
+| `.ollama_rag/` | RAG vector index (per project, inside project root) |
 
 ---
 
@@ -130,17 +195,16 @@ All config and data is stored in your home directory:
 
 - Python 3.10+
 - macOS, Linux, or Windows
-- Ollama (handled automatically on first run)
+- **Ollama installed and running** — [ollama.com/download](https://ollama.com/download)
 
 ---
 
 ## Roadmap
 
-- [ ] MCP server — expose tools to Claude Code, Cursor, and other agents
-- [ ] Repo-aware context — auto-index codebase on launch from a project folder
-- [ ] Git tools — `/diff`, `/commit`, `/log`
+- [ ] Project memory — `/understand` deep-reads your codebase and stores structured knowledge
+- [ ] MCP server support — connect to filesystem, GitHub, Postgres, browser tools
+- [ ] TUI dashboard — split-pane interface with live swarm agent view
 - [ ] API key integrations — Claude, OpenAI, Gemini, Groq as model backends
-- [ ] Symbol search across codebase
 
 ---
 

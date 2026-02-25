@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ollama-agentic"
-version = "1.0.1"
+version = "1.0.2"
 description = "A beautiful, agentic CLI for Ollama — run local LLMs with auto tool-calling, memory, and more"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -33,6 +33,10 @@ dependencies = [
     "ollama>=0.4",
     "requests>=2.28",
     "beautifulsoup4>=4.11",
+    "lancedb>=0.6",
+    "sentence-transformers>=2.7",
+    "tree-sitter>=0.21",
+    "tree-sitter-python>=0.21",
 ]
 
 [project.optional-dependencies]
