@@ -48,7 +48,10 @@ except ImportError:
     WEB_ENABLED = False
 
 try:
-    from rag import RAGIndex, check_deps, format_search_results_rich
+    try:
+        from ollama_cli.rag import RAGIndex, check_deps, format_search_results_rich
+    except ImportError:
+        from rag import RAGIndex, check_deps, format_search_results_rich
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
@@ -510,7 +513,7 @@ class OllamaCLI:
             " \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2554\u255d\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551",
             " \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2551 \u255a\u2550\u255d \u2588\u2588\u2551\u2588\u2588\u2551  \u2588\u2588\u2551",
             "  \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d",
-            "              C L I  v 4 . 0  \u00b7  A G E N T I C         ",
+            "              C L I  v 3 . 1  \u00b7  A G E N T I C         ",
         ]
         colors = ["bright_cyan","cyan","bright_green","green","cyan","bright_cyan","dim white"]
         self.console.print()
